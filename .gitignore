@@ -1,5 +1,4 @@
-# Our PDFs are all generated
-*.pdf
+#We decided to keep PDF file compared with the RL-book
 
 # Emacs files
 *~
@@ -16,3 +15,6 @@ __pycache__
 *.dvi
 *.log
 *.out.ps
+*.synctex.gz
+*.log
+*.out
