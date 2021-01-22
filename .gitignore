@@ -17,4 +17,5 @@ __pycache__
 *.out.ps
 *.synctex.gz
 *.log
+*.tex
 *.out

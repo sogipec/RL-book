@@ -270,7 +270,7 @@ class FiniteMarkovDecisionProcess(MarkovDecisionProcess[S, A]):
 
         for state in self.mapping:
             action_map: Optional[ActionMapping[A, S]] = self.mapping[state]
-
+            print(action_map)
             if action_map is None:
                 transition_mapping[state] = None
             else:
