@@ -28,24 +28,25 @@ class LilypadModel(FiniteMarkovDecisionProcess[StatePond,Action]):
             self.n:int = n
             #The grid is represented as a list of 
             super().__init__(self.get_lilypads_mapping())
-    
+
         def get_lilypads_mapping(self) -> StateActionMapping[StatePond, Action]:
             n:int = self.n
-            mapping: StateActionMapping[StatePond, Action] = {
-                    StatePond(position = i): {
-                        Action('A'): {
-                            ((StatePond(position = i-1),0.), (i / n)),
-                            ((StatePond(position = i+1),1. if i==n-1 else 0.), (1. - i / n))
-                        },
-                        Action('B'): {
-                            ((StatePond(position = j),1. if j==n else 0.), (1 / n))
+            mapping: StateActionMapping[StatePond, Action] = {}
+            for i in range(1,n):
+                mapping[StatePond(position = i)] = {
+                        Action('A'): Categorical({
+                            (StatePond(position = i-1),0.): i / n,
+                            (StatePond(position = i+1),1. if i==n-1 else 0.): (1. - i / n)
+                        }),
+                        Action('B'): Categorical({
+                            (StatePond(position = j),1. if j==n else 0.): (1 / n)
                             for j in range(n + 1) if j != i
-                        }
-                    } for i in range(1, n)
-                }
+                        })
+                    } 
             mapping[StatePond(position = 0)] = None
             mapping[StatePond(position = n)] = None
             return mapping
+
     
 def get_policies(n)->Iterable[FinitePolicy[StatePond,Action]]: 
     list_policies: Iterable[FinitePolicy[StatePond,Action]] = []
