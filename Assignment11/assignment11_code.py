@@ -54,9 +54,9 @@ def mc_prediction_scratch(
         if count_episodes%1000 == 0:
             print(f"{count_episodes} episodes processed")
         for step in episode:
-            count:int = counts_per_state[state]
+            count:int = counts_per_state[step.state]
             v[step.state] = v[step.state]*(count/(count+1))+1/(count+1)*step.return_
-            counts_per_state[state] = count + 1
+            counts_per_state[step.state] = count + 1
 
     return v
 
@@ -91,7 +91,7 @@ def td_prediction_scratch(
         count_transitions+=1
         if count_transitions>num_transitions:
             break
-        counts_per_state[state] += 1
+        counts_per_state[transition.state] += 1
         #learning_rate = 1/counts_per_state[state]
         #learning_rate = 0.1
         v[transition.state] = v[transition.state] + learning_rate*\
