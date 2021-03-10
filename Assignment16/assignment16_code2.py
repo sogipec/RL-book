@@ -20,83 +20,63 @@ A = TypeVar('A')
 
 #PROBLEM 1
 
-#We will work in the finite action space setting, where we can compute the score function
-#quite easily
-def get_policy(theta:Sequence[float],
-               features:Sequence[Callable[[S,A], float]],
-               actions:Sequence[A],
-               states:Sequence[S])->FinitePolicy[S,A]:
-    policy_map:Mapping[S, Optional[FiniteDistribution[A]]] = {}
-    for state in states:
-        mapping = {}
-        summ = 0
-        for action in actions:
-            phi:np.ndarray = np.array([feature(state,action) for feature in features])
-            value = np.exp(np.dot(phi,theta))
-            mapping[action] = value
-            summ += value
-        for action in actions:
-            mapping[action] = mapping[action]/value
-        policy_map[state] = Categorical(mapping)
-    return FinitePolicy(policy_map)
-
-def get_score(policy:FinitePolicy[S,A],
-          state:S,
-          action:A,
-          features:Sequence[Callable[[S,A], float]],
-          actions:Sequence[A])->Sequence[float]:
-    phi_a:np.ndarray = np.array([feature(state,action) for feature in features])
-    for b in actions:
-        phi_b:np.ndarray = np.array([feature(state,b) for feature in features])
-        pi = policy.policy_map[state].table.get(b)
-        phi_b = pi*phi_b
-        phi_a -= phi_b
-    return list(phi_a)
-    
 def reinforce(mdp_to_sample_from:MarkovDecisionProcess,
               features:Sequence[Callable[[S,A], float]],
               start_state_distrib:Distribution[S],
               gamma:float,
               alpha:float,
-              actions:Sequence[A],
-              states:Sequence[S],
+              actions:Callable[[S], Iterable[A]],
               num_episodes:int,
-              max_length_episode:int)->FinitePolicy[S,A]:
-    theta:np.ndarray = np.array([0 for i in range(len(features))])
+              max_length_episode:int)->Policy[S,A]:
+    
+    def get_phi(state:S,action:A)->np.ndarray:
+        return np.array([feature((state,action)) for feature in features])
+    
+    class SoftPolicy(Policy[S,A]):
+        def __init__(self,theta:np.ndarray):
+            self.theta = theta
+        def act(self,state:S)->Optional[Distribution[A]]:
+            mapping = {}
+            denom = np.sum([np.exp(np.dot(get_phi(state, b), self.theta)) for b in actions(state)
+                                      if np.exp(np.dot(get_phi(state, b), self.theta)) >= 0.0001])
+            for action in actions(state):
+                phi:np.ndarray = get_phi(state,action)
+                value = np.exp(np.dot(phi,theta))
+                if value<0.00001:
+                    continue
+                mapping[action] = value/denom
+            return Categorical(mapping)
+        
+    theta:np.ndarray = np.zeros(len(features))  
     for k in range(num_episodes):
-        policy = get_policy(theta,features,actions,states)
+        print(k)
+        policy = SoftPolicy(theta)
         #Not sure if we should update the policy at each step every episode or only once 
         #at the end of each episode
         steps:Iterable[TransitionStep[S, A]] = mdp_to_sample_from.simulate_actions(start_state_distrib,
                                                                                    policy)
-        count = 0
-        rewards:Sequence[float] = []
-        state_seq:Sequence[S] = []
-        action_seq:Sequence[A] = []
-        for step in steps:
-            count+=1
-            if count>max_length_episode:
-                break
-            rewards.append(step.reward)
-            action_seq.append(step.action)
-            state_seq.append(step.state)
-        G = np.zeros_like(rewards)
-        for i in range(len(G)):
-            somm = 0
-            for j in range(i,len(G)):
-                somm += gamma**(j-i)*rewards[j]
-            G[i] = somm
-        for i in range(len(G)):
-            s = state_seq[i]
-            a = action_seq[i]
-            score = get_score(policy,s,a,features,actions)
-            theta += alpha*(gamma**i)*score*G[i]
+        episode = list(returns(steps,gamma,gamma**30))
+        for k in range(len(episode)):
+            step = episode[k]
+            s = step.state
+            a = step.action
+            return_ = step.return_
+            phi_a:np.ndarray = get_phi(s,a)
+            denom = sum([np.exp(np.dot(get_phi(s, b), theta)) for b in actions(s)
+                                if np.exp(np.dot(get_phi(s, b), theta)) >= 0.0001])
+            pi = sum([np.exp(np.dot(get_phi(s, b), theta)) * get_phi(s, b) for b in actions(s)
+                          if np.exp(np.dot(get_phi(s, b), theta)) >= 0.0001])
+            if denom == 0:
+                subtract = 0
+            else:
+                subtract = pi/denom
+            score = phi_a - subtract
+            theta += alpha*(gamma**k)*score*return_
+    policy = SoftPolicy(theta)
     return policy
     
-#Problem 2
-#We implement the ACTOR-CRITIC-ELIGIBILITY-TRACES Algorithm in a finite state setting
-#We will approximate the value function using a Linear Function 
-
+#PROBLEM 2
+#We implement the ACTOR-CRITIC-ELIGIBILITY-TRACES Algorithm
 def actor_critic_et(mdp_to_sample_from:MarkovDecisionProcess,
               features:Sequence[Callable[[S,A], float]],
               start_state_distrib:Distribution[S],
@@ -105,30 +85,49 @@ def actor_critic_et(mdp_to_sample_from:MarkovDecisionProcess,
               alpha_theta:float,
               lambda_v:float,
               lambda_theta:float,
-              actions:Sequence[A],
-              states:Sequence[S],
+              actions:Callable[[S], Iterable[A]],
               num_episodes:int,
               max_length_episode:int,
-              approx_0:LinearFunctionApprox[S])->FinitePolicy[S,A]:
-    theta:np.ndarray = ([0 for i in range(len(features))])
-    V:LinearFunctionApprox[S] = approx_0
-    v = V.weights.weights
+              approx_0:DNNApprox[S])->Policy[S,A]:
+    
+    def get_phi(state:S,action:A)->np.ndarray:
+        return np.array([feature((state,action)) for feature in features])
+    
+    class SoftPolicy(Policy[S,A]):
+        def __init__(self,theta:np.ndarray):
+            self.theta = theta
+        def act(self,state:S)->Optional[Distribution[A]]:
+            mapping = {}
+            denom = np.sum([np.exp(np.dot(get_phi(state, b), self.theta)) for b in actions(state)
+                                      if np.exp(np.dot(get_phi(state, b), self.theta)) >= 0.0001])
+            for action in actions(state):
+                phi:np.ndarray = get_phi(state,action)
+                value = np.exp(np.dot(phi,theta))
+                if value<0.00001:
+                    continue
+                mapping[action] = value/denom
+            return Categorical(mapping)
+        
+    theta:np.ndarray = np.zeros(len(features))
+    V:DNNApprox[S] = approx_0
+    v = [V.weights[i].weights for i in range(len(V.weights))]
     feature_functions_v = V.feature_functions
     regularization_coeff_v = V.regularization_coeff
+    dnn_spec = V.dnn_spec
     for k in range(num_episodes):
-        policy = get_policy(theta,features,actions,states)
+        policy = SoftPolicy(theta)
         #Same here, don't know if we should update the policy at the end of each episode or no
         steps:Iterable[TransitionStep[S, A]] = mdp_to_sample_from.simulate_actions(start_state_distrib,
                                                                                    policy)
         P = 1
-        z_theta,z_v = np.zeros(len(features)),np.zeros(len(features))
+        z_theta,z_v = np.zeros(len(features)),np.zeros(len(feature_functions_v))
         count = 0
         for step in steps:
             #policy = get_policy(theta,features,actions,states)
-            V = LinearFunctionApprox(feature_functions = feature_functions_v,
-                                 regularization_coeff = regularization_coeff_v,
-                                 weights = Weights.create(weights=v),
-                                 direct_solve = False)
+            V = DNNApprox(feature_functions = feature_functions_v,
+                          dnn_spec= dnn_spec,
+                          weights = [Weights.create(weights=i) for i in v],
+                          regularization_coeff = regularization_coeff_v)
             #Don't know if we should update V at the end of each episode or no
             count+=1
             if count>max_length_episode:
@@ -140,14 +139,26 @@ def actor_critic_et(mdp_to_sample_from:MarkovDecisionProcess,
             v_s,v_nexts = V.evaluate([state,next_state])
             delta = reward + gamma*v_nexts - v_s
             z_v = gamma*lambda_v*z_v + V.representational_gradient(state)
-            z_theta = gamma*lambda_theta*z_theta + P*get_score(policy,state,action,features,actions)
+            phi_a:np.ndarray = get_phi(state,action)
+            denom = sum([np.exp(np.dot(get_phi(state, b), theta)) for b in actions(state)
+                                if np.exp(np.dot(get_phi(state, b), theta)) >= 0.0001])
+            pi = sum([np.exp(np.dot(get_phi(state, b), theta)) * get_phi(state, b) for b in actions(state)
+                          if np.exp(np.dot(get_phi(state, b), theta)) >= 0.0001])
+            if denom == 0:
+                subtract = 0
+            else:
+                subtract = pi/denom
+            score = phi_a - subtract
+            z_theta = gamma*lambda_theta*z_theta + P*score
             theta = theta+alpha_theta*delta*z_theta
             v = v + alpha_v*delta*z_v
             P = gamma*P
+    policy = SoftPolicy(theta)
     return policy
             
             
 if __name__ == '__main__':
+    
 
     from pprint import pprint
 
@@ -197,30 +208,6 @@ if __name__ == '__main__':
         dnn_spec=dnn,
         initial_wealth_distribution=init_wealth_distr
     )
-    #The line of code below takes too much time to run, we can't compare the results of our implementation
-    #with the baseline
-    """
-    it_qvf: Iterator[DNNApprox[Tuple[float, float]]] = \
-        aad.backward_induction_qvf()
-
-    print("Backward Induction on Q-Value Function")
-    print("--------------------------------------")
-    print()
-    for t, q in enumerate(it_qvf):
-        print(f"Time {t:d}")
-        print()
-        opt_alloc: float = max(
-            ((q.evaluate([(init_wealth, ac)])[0], ac) for ac in alloc_choices),
-            key=itemgetter(0)
-        )[1]
-        val: float = max(q.evaluate([(init_wealth, ac)])[0]
-                         for ac in alloc_choices)
-        print(f"Opt Risky Allocation = {opt_alloc:.3f}, Opt Val = {val:.3f}")
-        print("Optimal Weights below:")
-        for wts in q.weights:
-            pprint(wts.weights)
-        print()
-
     print("Analytical Solution")
     print("-------------------")
     print()
@@ -245,6 +232,40 @@ if __name__ == '__main__':
         print(f"x_t Weight = {x_t_wt:.3f}")
         print(f"x_t^2 Weight = {x_t2_wt:.3f}")
         print()
-      
+
+    mdp = aad.get_mdp(3)
+    num_episodes = 100
+    max_length_episode = 10000
+    print("Solving Problem 1")
+
+    policy = reinforce(mdp,
+                       feature_funcs,
+                       init_wealth_distr,
+                       0.95,
+                       0.01,
+                       mdp.actions,
+                       num_episodes,
+                       max_length_episode)
     """
+    
+    print("Solving Problem 2")
+    ffs =  [
+            lambda _: 1.,
+            lambda w_x: w_x,
+            lambda w_x: w_x**2
+        ]
+    approx_0 = aad.get_vf_func_approx(ffs)
+    #Some issues with function approx and weights
+    policy_2 = actor_critic_et(mdp,
+                       feature_funcs,
+                       init_wealth_distr,
+                       0.95,
+                       0.01,0.01,0.01,0.01,
+                       mdp.actions,
+                       num_episodes,
+                       max_length_episode,
+                       approx_0)
+    """
+                                
+
         
